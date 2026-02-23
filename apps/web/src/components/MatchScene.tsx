@@ -840,6 +840,10 @@ export default function MatchScene() {
   const relayerIsDone = relayerPhase === 'done';
   const relayerIsBusy = relayerPhase === 'proving' || relayerPhase === 'submitting';
   const relayerIsError = relayerPhase === 'error';
+  const needsFinalizeRetry =
+    finalizeSubmitted &&
+    !myFinalizeLockedByRelay &&
+    (relayerPhase === 'waiting_for_commits' || relayerPhase === 'waiting_for_reveals');
   const finalizeCtaLabel = relayerIsDone
     ? 'FINALIZED'
     : relayerPhase === 'proving'
@@ -848,6 +852,8 @@ export default function MatchScene() {
         ? 'RELAYER SUBMITTING...'
         : finalizing
           ? 'FINALIZING...'
+          : needsFinalizeRetry
+            ? 'RETRY FINALIZE'
           : finalizeSubmitted || myFinalizeLockedByRelay
             ? 'FINALIZE SUBMITTED'
             : 'FINALIZE ON-CHAIN';
@@ -994,9 +1000,12 @@ export default function MatchScene() {
     }
 
     if (relayerPhase === 'waiting_for_commits') {
+      const myRoleLabel = myRole === 'p1' ? 'P1' : myRole === 'p2' ? 'P2' : '';
       setSettleMessage(
         pendingCommitRoles.length > 0
-          ? `Waiting for transcript commits: ${pendingCommitRoles.join(' / ')}.`
+          ? myRoleLabel && pendingCommitRoles.includes(myRoleLabel)
+            ? 'Your transcript commit is not confirmed on-chain yet. Click Finalize on-chain again.'
+            : `Waiting for transcript commits: ${pendingCommitRoles.join(' / ')}.`
           : finalizeSubmitted || myFinalizeLockedByRelay
             ? 'Finalize submitted. Waiting for opponent...'
             : 'Waiting for your finalize submission.'
@@ -1026,6 +1035,7 @@ export default function MatchScene() {
     myFinalizeLockedByRelay,
     pendingCommitRoles,
     pendingRevealRoles,
+    myRole,
     showOutcomeModal,
   ]);
 
@@ -1418,7 +1428,6 @@ export default function MatchScene() {
     relay.connected &&
     !!myRole &&
     !finalizing &&
-    !finalizeSubmitted &&
     !myFinalizeLockedByRelay &&
     !relayerIsBusy &&
     !relayerIsDone;

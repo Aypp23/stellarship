@@ -1087,6 +1087,41 @@ async function commitTranscriptAsBot(session, cfg) {
   }
 }
 
+async function reconcileTranscriptCommitsFromChain(session, cfg) {
+  const settle = session?.settle;
+  if (!settle) return;
+  const currentDigest = cleanHex(session?.transcriptDigestHex ?? '');
+  if (currentDigest.length !== 64) return;
+
+  let onChain;
+  try {
+    onChain = await fetchOnChainTranscriptDigests(cfg, session.sessionId);
+  } catch {
+    return;
+  }
+
+  const p1OnChain = cleanHex(onChain?.p1 ?? '');
+  const p2OnChain = cleanHex(onChain?.p2 ?? '');
+
+  if (!settle.p1.commitDone && p1OnChain === currentDigest) {
+    settle.p1 = {
+      ...settle.p1,
+      commitDone: true,
+      digestHex: currentDigest,
+    };
+  }
+  if (!settle.p2.commitDone && p2OnChain === currentDigest) {
+    settle.p2 = {
+      ...settle.p2,
+      commitDone: true,
+      digestHex: currentDigest,
+    };
+    if (session?.bot?.enabled) {
+      session.bot.transcriptCommittedOnChain = true;
+    }
+  }
+}
+
 function scheduleBotTranscriptRetry(io, session, delayMs = 2500) {
   if (!session?.bot?.enabled) return;
   if (session.bot.transcriptRetryTimer) return;
@@ -1548,6 +1583,9 @@ async function maybeStartSettlement(io, session) {
     }
   }
 
+  // Reconcile commit flags with on-chain truth to recover from transient socket/client state loss.
+  await reconcileTranscriptCommitsFromChain(session, cfg);
+
   // Safety net: if committed digests diverge (or drift from current transcript), never proceed.
   const currentDigest = cleanHex(session.transcriptDigestHex);
   const p1Digest = cleanHex(settle.p1?.digestHex ?? '');
@@ -1596,6 +1634,7 @@ async function maybeStartSettlement(io, session) {
   if (!settle.p1.commitDone || !settle.p2.commitDone) {
     settle.phase = 'waiting_for_commits';
     broadcastSettleStatus(io, session);
+    scheduleSettleRetry(io, session);
     return;
   }
   if (!settle.p1.reveal || !settle.p2.reveal) {
@@ -2088,11 +2127,24 @@ io.on('connection', (socket) => {
         throw new Error('Digest mismatch: player committed a different digest than relayer transcript');
       }
 
+      const expectedDigest = digestHex || session.transcriptDigestHex;
+      let commitVisibleOnChain = false;
+      if (expectedDigest && expectedDigest.length === 64) {
+        try {
+          const cfg = getRelayConfig();
+          const onChain = await fetchOnChainTranscriptDigests(cfg, session.sessionId);
+          const onChainDigest = role === 'p1' ? cleanHex(onChain?.p1 ?? '') : cleanHex(onChain?.p2 ?? '');
+          commitVisibleOnChain = onChainDigest === expectedDigest;
+        } catch {
+          // Keep waiting_for_commits; settlement loop will reconcile and retry.
+        }
+      }
+
       session.settle[role] = {
         ...session.settle[role],
         address,
-        commitDone: true,
-        digestHex: digestHex || session.transcriptDigestHex,
+        commitDone: commitVisibleOnChain,
+        digestHex: expectedDigest,
       };
 
       broadcastSettleStatus(io, session);
