@@ -1,0 +1,181 @@
+import { PrismaClient } from '../src/generated/prisma';
+
+const prisma = new PrismaClient();
+
+const enemyTypes = [
+    {
+        name: 'Forest Wolf',
+        description: 'A quick predator that hunts in the outskirts of the forest.',
+        avatarUrl: 'https://placehold.co/200x200?text=Forest+Wolf',
+        minLevel: 1,
+        maxLevel: 5,
+        baseStrength: 8,
+        baseAgility: 10,
+        baseEndurance: 7,
+        baseIntelligence: 4,
+        statVariance: 0.1,
+        spawnWeight: 140,
+        tags: ['beast', 'forest'],
+    },
+    {
+        name: 'Bandit Scout',
+        description: 'An opportunistic thief who ambushes lone travelers.',
+        avatarUrl: 'https://placehold.co/200x200?text=Bandit+Scout',
+        minLevel: 3,
+        maxLevel: 12,
+        baseStrength: 10,
+        baseAgility: 12,
+        baseEndurance: 9,
+        baseIntelligence: 6,
+        statVariance: 0.12,
+        spawnWeight: 120,
+        tags: ['humanoid'],
+    },
+    {
+        name: 'Cave Spider',
+        description: 'Venomous spider that thrives in the darkness of caves.',
+        avatarUrl: 'https://placehold.co/200x200?text=Cave+Spider',
+        minLevel: 5,
+        maxLevel: 14,
+        baseStrength: 9,
+        baseAgility: 14,
+        baseEndurance: 11,
+        baseIntelligence: 5,
+        statVariance: 0.15,
+        spawnWeight: 110,
+        tags: ['beast', 'poison'],
+    },
+    {
+        name: 'Swamp Shaman',
+        description: 'A mystic who channels the murky energies of the bog.',
+        avatarUrl: 'https://placehold.co/200x200?text=Swamp+Shaman',
+        minLevel: 8,
+        maxLevel: 18,
+        baseStrength: 9,
+        baseAgility: 9,
+        baseEndurance: 12,
+        baseIntelligence: 14,
+        statVariance: 0.14,
+        spawnWeight: 100,
+        tags: ['caster', 'swamp'],
+    },
+    {
+        name: 'Stone Golem',
+        description: 'A hulking construct carved from enchanted rock.',
+        avatarUrl: 'https://placehold.co/200x200?text=Stone+Golem',
+        minLevel: 12,
+        maxLevel: 24,
+        baseStrength: 18,
+        baseAgility: 6,
+        baseEndurance: 20,
+        baseIntelligence: 6,
+        statVariance: 0.08,
+        spawnWeight: 80,
+        tags: ['construct'],
+    },
+    {
+        name: 'Frost Mage',
+        description: 'A renegade sorcerer wielding shards of winter.',
+        avatarUrl: 'https://placehold.co/200x200?text=Frost+Mage',
+        minLevel: 18,
+        maxLevel: 32,
+        baseStrength: 9,
+        baseAgility: 11,
+        baseEndurance: 12,
+        baseIntelligence: 20,
+        statVariance: 0.15,
+        spawnWeight: 85,
+        tags: ['caster', 'frost'],
+    },
+    {
+        name: 'Desert Assassin',
+        description: 'A silent killer trained to strike from the dunes.',
+        avatarUrl: 'https://placehold.co/200x200?text=Desert+Assassin',
+        minLevel: 22,
+        maxLevel: 40,
+        baseStrength: 16,
+        baseAgility: 22,
+        baseEndurance: 14,
+        baseIntelligence: 12,
+        statVariance: 0.12,
+        spawnWeight: 90,
+        tags: ['humanoid', 'stealth'],
+    },
+    {
+        name: 'Undead Knight',
+        description: 'A cursed warrior bound to eternal service.',
+        avatarUrl: 'https://placehold.co/200x200?text=Undead+Knight',
+        minLevel: 28,
+        maxLevel: 48,
+        baseStrength: 20,
+        baseAgility: 14,
+        baseEndurance: 22,
+        baseIntelligence: 10,
+        statVariance: 0.1,
+        spawnWeight: 70,
+        tags: ['undead', 'elite'],
+    },
+    {
+        name: 'Runic Sentinel',
+        description: 'An ancient guardian powered by glowing runes.',
+        avatarUrl: 'https://placehold.co/200x200?text=Runic+Sentinel',
+        minLevel: 40,
+        maxLevel: 60,
+        baseStrength: 24,
+        baseAgility: 16,
+        baseEndurance: 24,
+        baseIntelligence: 16,
+        statVariance: 0.1,
+        spawnWeight: 60,
+        tags: ['construct', 'guardian'],
+    },
+    {
+        name: 'Shadow Drake',
+        description: 'A young drake that lurks between shadows.',
+        avatarUrl: 'https://placehold.co/200x200?text=Shadow+Drake',
+        minLevel: 55,
+        maxLevel: 75,
+        baseStrength: 26,
+        baseAgility: 22,
+        baseEndurance: 26,
+        baseIntelligence: 18,
+        statVariance: 0.12,
+        spawnWeight: 45,
+        tags: ['dragon', 'shadow'],
+    },
+    {
+        name: 'Void Warden',
+        description: 'A commander from beyond the veil wielding void energy.',
+        avatarUrl: 'https://placehold.co/200x200?text=Void+Warden',
+        minLevel: 70,
+        maxLevel: 100,
+        baseStrength: 30,
+        baseAgility: 20,
+        baseEndurance: 30,
+        baseIntelligence: 26,
+        statVariance: 0.15,
+        spawnWeight: 35,
+        tags: ['boss', 'void'],
+    },
+];
+
+async function main() {
+    for (const enemy of enemyTypes) {
+        await prisma.enemyType.upsert({
+            where: { name: enemy.name },
+            update: enemy,
+            create: enemy,
+        });
+    }
+}
+
+main()
+    .then(async () => {
+        console.log(`Seeded ${enemyTypes.length} enemy types`);
+        await prisma.$disconnect();
+    })
+    .catch(async (error) => {
+        console.error('Failed to seed enemy types:', error);
+        await prisma.$disconnect();
+        process.exit(1);
+    });

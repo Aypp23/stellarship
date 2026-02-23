@@ -1,0 +1,21 @@
+{
+  "name": "Stellarship",
+  "short_name": "Stellarship",
+  "description": "Hidden-information naval strategy with commitments and ZK settlement on Stellar.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#F2E5C4",
+  "theme_color": "#F2E5C4",
+  "icons": [
+    {
+      "src": "/apple-touch-icon.png",
+      "sizes": "180x180",
+      "type": "image/png"
+    },
+    {
+      "src": "/favicon.ico",
+      "sizes": "16x16 32x32 48x48",
+      "type": "image/x-icon"
+    }
+  ]
+}

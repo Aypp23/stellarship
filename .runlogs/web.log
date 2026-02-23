@@ -1,0 +1,15 @@
+
+> stellar-zk-game-web@1.0.0 predev
+> rm -rf .next
+
+
+> stellar-zk-game-web@1.0.0 dev
+> next dev
+
+   ▲ Next.js 15.1.9
+   - Local:        http://localhost:3000
+   - Network:      http://192.168.1.242:3000
+   - Environments: .env.local
+
+ ✓ Starting...
+ ✓ Ready in 2.2s

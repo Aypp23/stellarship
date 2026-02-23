@@ -1,0 +1,15 @@
+{
+  "name": "stellar-zk-gaming",
+  "private": true,
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev:web": "npm --workspace apps/web run dev",
+    "build:web": "npm --workspace apps/web run build",
+    "lint:web": "npm --workspace apps/web run lint",
+    "dev:relay": "npm --workspace apps/relay run dev",
+    "start:relay": "npm --workspace apps/relay run start"
+  }
+}
+

@@ -1,0 +1,11 @@
+[workspace]
+resolver = "2"
+members = [
+  "host",
+  "methods",
+  "methods/guest",
+  "shared",
+]
+
+[patch.crates-io]
+risc0-build-kernel = { path = "vendor/risc0-build-kernel" }

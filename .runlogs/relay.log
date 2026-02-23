@@ -1,0 +1,5 @@
+
+> stellar-zk-game-relay@1.0.0 dev
+> node --env-file=.env src/server.js
+
+[relay] listening on :3001

@@ -1,0 +1,6 @@
+[env]
+# Skip building Metal GPU kernels (requires Xcode 'metal' tool).
+RISC0_SKIP_BUILD_KERNELS = "1"
+
+# Provide the recursion ZKR artifact locally to avoid downloader issues.
+RECURSION_SRC_PATH = "/tmp/recursion_zkr.zip"
