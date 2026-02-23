@@ -224,6 +224,12 @@ function defaultProverBin() {
   return candidates[0];
 }
 
+function parsePositiveInt(value, fallback) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return Math.floor(n);
+}
+
 function getRelayConfig() {
   const rpcUrl =
     process.env.SOROBAN_RPC_URL ||
@@ -241,7 +247,40 @@ function getRelayConfig() {
   const relayerSecret = process.env.RELAYER_SECRET_KEY || '';
   const botSecret = process.env.BOT_SECRET_KEY || process.env.ZKBS_BOT_SECRET_KEY || relayerSecret || '';
   const proverBin = defaultProverBin();
-  return { rpcUrl, networkPassphrase, contractId, relayerSecret, botSecret, proverBin };
+  const proverBackend = String(process.env.ZKBS_PROVER_BACKEND || 'auto')
+    .trim()
+    .toLowerCase();
+  const githubToken = String(process.env.GITHUB_TOKEN || process.env.ZKBS_GITHUB_TOKEN || '').trim();
+  const githubRepo = String(process.env.GITHUB_REPO || process.env.ZKBS_GITHUB_REPO || '').trim();
+  const githubWorkflow = String(
+    process.env.GITHUB_WORKFLOW || process.env.ZKBS_GITHUB_WORKFLOW || 'zkbs-prover.yml'
+  ).trim();
+  const githubWorkflowRef = String(
+    process.env.GITHUB_WORKFLOW_REF || process.env.ZKBS_GITHUB_WORKFLOW_REF || 'main'
+  ).trim();
+  const githubPollMs = parsePositiveInt(
+    process.env.GITHUB_PROVER_POLL_MS || process.env.ZKBS_GITHUB_PROVER_POLL_MS,
+    2500
+  );
+  const githubTimeoutMs = parsePositiveInt(
+    process.env.GITHUB_PROVER_TIMEOUT_MS || process.env.ZKBS_GITHUB_PROVER_TIMEOUT_MS,
+    20 * 60 * 1000
+  );
+  return {
+    rpcUrl,
+    networkPassphrase,
+    contractId,
+    relayerSecret,
+    botSecret,
+    proverBin,
+    proverBackend,
+    githubToken,
+    githubRepo,
+    githubWorkflow,
+    githubWorkflowRef,
+    githubPollMs,
+    githubTimeoutMs,
+  };
 }
 
 const sessions = new Map();
@@ -1178,7 +1217,221 @@ function scheduleSettleRetry(io, session, delayMs = 2500) {
   }, delayMs);
 }
 
-async function runProver(session, proverBin) {
+function parseProofOutput(parsed) {
+  const sealHex = cleanHex(parsed?.seal_hex ?? parsed?.sealHex ?? '');
+  const journalHex = cleanHex(parsed?.journal_hex ?? parsed?.journalHex ?? '');
+  if (!sealHex || !journalHex) throw new Error('Prover output missing seal_hex/journal_hex');
+  return { sealHex, journalHex };
+}
+
+async function runLocalProver(input, proverBin, sessionId) {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), `zkbs-${sessionId}-`));
+  const inputPath = path.join(tmpDir, 'input.json');
+  const outPath = path.join(tmpDir, 'proof.json');
+  await fs.writeFile(inputPath, JSON.stringify(input, null, 2), 'utf8');
+
+  await execFileAsync(proverBin, ['--input', inputPath, '--out', outPath], {
+    maxBuffer: 1024 * 1024 * 20,
+  });
+
+  const raw = await fs.readFile(outPath, 'utf8');
+  const parsed = JSON.parse(raw);
+  return parseProofOutput(parsed);
+}
+
+function shouldUseGithubProver(cfg) {
+  const backend = String(cfg?.proverBackend ?? 'auto').toLowerCase();
+  const hasGithubConfig = !!cfg?.githubToken && !!cfg?.githubRepo && !!cfg?.githubWorkflow && !!cfg?.githubWorkflowRef;
+  if (backend === 'local') return false;
+  if (backend === 'github') {
+    if (!hasGithubConfig) {
+      throw new Error(
+        'GitHub prover backend selected but GitHub config is incomplete (GITHUB_TOKEN/GITHUB_REPO/GITHUB_WORKFLOW/GITHUB_WORKFLOW_REF).'
+      );
+    }
+    return true;
+  }
+  if (backend === 'auto') return hasGithubConfig;
+  throw new Error(`Invalid ZKBS_PROVER_BACKEND value: ${backend} (expected local|github|auto)`);
+}
+
+function parseGithubRepoSlug(slug) {
+  const m = /^([^/\s]+)\/([^/\s]+)$/.exec(String(slug ?? '').trim());
+  if (!m) throw new Error('GITHUB_REPO must be in owner/repo format');
+  return { owner: m[1], repo: m[2] };
+}
+
+async function githubApiRequest(cfg, apiPath, opts = {}) {
+  if (typeof fetch !== 'function') throw new Error('Global fetch is unavailable in this Node runtime');
+  const url = `https://api.github.com${apiPath}`;
+  const headers = {
+    authorization: `Bearer ${cfg.githubToken}`,
+    accept: opts.accept || 'application/vnd.github+json',
+    'x-github-api-version': '2022-11-28',
+    'user-agent': 'stellarship-relay',
+  };
+  const method = opts.method || 'GET';
+  const hasJson = Object.prototype.hasOwnProperty.call(opts, 'json');
+  if (hasJson) headers['content-type'] = 'application/json';
+
+  const resp = await fetch(url, {
+    method,
+    headers,
+    body: hasJson ? JSON.stringify(opts.json) : undefined,
+  });
+
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new Error(`GitHub API ${method} ${apiPath} failed (${resp.status}): ${text.slice(0, 400)}`);
+  }
+  return resp;
+}
+
+async function readProofFromArtifactZip(zipBuf, sessionId) {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), `zkbs-gh-${sessionId}-`));
+  const zipPath = path.join(tmpDir, 'artifact.zip');
+  await fs.writeFile(zipPath, zipBuf);
+
+  try {
+    let entries = [];
+    try {
+      const list = await execFileAsync('unzip', ['-Z1', zipPath], {
+        maxBuffer: 1024 * 1024 * 4,
+      });
+      entries = String(list.stdout || '')
+        .split('\n')
+        .map((s) => s.trim())
+        .filter(Boolean);
+    } catch {
+      // Fallback path lookup if -Z is unavailable.
+      const list = await execFileAsync('unzip', ['-l', zipPath], {
+        maxBuffer: 1024 * 1024 * 4,
+      });
+      entries = String(list.stdout || '')
+        .split('\n')
+        .map((s) => s.trim().split(/\s+/).pop() || '')
+        .filter((s) => s && !s.startsWith('---') && !s.startsWith('Name') && !s.startsWith('Length'));
+    }
+
+    const proofEntry =
+      entries.find((e) => /(^|\/)proof\.json$/i.test(e)) ||
+      entries.find((e) => e.toLowerCase().endsWith('.json'));
+    if (!proofEntry) throw new Error('GitHub artifact did not contain proof.json');
+
+    const extracted = await execFileAsync('unzip', ['-p', zipPath, proofEntry], {
+      maxBuffer: 1024 * 1024 * 20,
+    });
+    const parsed = JSON.parse(String(extracted.stdout || '{}'));
+    return parseProofOutput(parsed);
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+}
+
+async function runGithubProver(input, cfg, sessionId) {
+  const { owner, repo } = parseGithubRepoSlug(cfg.githubRepo);
+  const workflow = encodeURIComponent(cfg.githubWorkflow);
+  const requestId = crypto.randomBytes(8).toString('hex');
+  const artifactName = `zkbs-proof-${requestId}`;
+  const createdAfterMs = Date.now() - 60 * 1000;
+
+  await githubApiRequest(cfg, `/repos/${owner}/${repo}/actions/workflows/${workflow}/dispatches`, {
+    method: 'POST',
+    json: {
+      ref: cfg.githubWorkflowRef,
+      inputs: {
+        request_id: requestId,
+        artifact_name: artifactName,
+        session_id: String(input.session_id),
+        mode_id: String(input.mode_id),
+        p1_salt_hex: input.p1_salt_hex,
+        p1_board_bits_hex: input.p1_board_bits_hex,
+        p2_salt_hex: input.p2_salt_hex,
+        p2_board_bits_hex: input.p2_board_bits_hex,
+        transcript_hex: input.transcript_hex,
+      },
+    },
+  });
+
+  const timeoutMs = cfg.githubTimeoutMs;
+  const deadline = Date.now() + timeoutMs;
+  let runUrl = '';
+
+  while (Date.now() < deadline) {
+    const runsResp = await githubApiRequest(
+      cfg,
+      `/repos/${owner}/${repo}/actions/workflows/${workflow}/runs?event=workflow_dispatch&branch=${encodeURIComponent(
+        cfg.githubWorkflowRef
+      )}&per_page=20`
+    );
+    const runsJson = await runsResp.json();
+    const runs = Array.isArray(runsJson?.workflow_runs) ? runsJson.workflow_runs : [];
+    const recentRuns = runs.filter((r) => {
+      const created = Date.parse(String(r?.created_at || ''));
+      return Number.isFinite(created) && created >= createdAfterMs;
+    });
+
+    const taggedRuns = recentRuns.filter((r) => {
+      const title = String(r?.display_title ?? '');
+      const name = String(r?.name ?? '');
+      return title.includes(requestId) || name.includes(requestId);
+    });
+    const candidates = (taggedRuns.length ? taggedRuns : recentRuns).sort((a, b) => {
+      const ta = Date.parse(String(a?.created_at || '0'));
+      const tb = Date.parse(String(b?.created_at || '0'));
+      return tb - ta;
+    });
+
+    let matchedPending = false;
+    for (const run of candidates) {
+      const runId = Number(run?.id);
+      if (!Number.isFinite(runId) || runId <= 0) continue;
+      runUrl = String(run?.html_url ?? runUrl);
+
+      const artResp = await githubApiRequest(
+        cfg,
+        `/repos/${owner}/${repo}/actions/runs/${runId}/artifacts?per_page=100`
+      );
+      const artJson = await artResp.json();
+      const artifacts = Array.isArray(artJson?.artifacts) ? artJson.artifacts : [];
+      const artifact = artifacts.find((a) => String(a?.name ?? '') === artifactName && !a?.expired);
+      if (!artifact) continue;
+
+      const status = String(run?.status ?? '');
+      if (status !== 'completed') {
+        matchedPending = true;
+        continue;
+      }
+
+      const conclusion = String(run?.conclusion ?? '');
+      if (conclusion !== 'success') {
+        throw new Error(`GitHub prover workflow failed (${conclusion || 'unknown'}). ${runUrl}`);
+      }
+
+      const artifactId = Number(artifact?.id);
+      if (!Number.isFinite(artifactId) || artifactId <= 0) {
+        throw new Error('GitHub prover workflow completed, but artifact id was missing.');
+      }
+      const zipResp = await githubApiRequest(
+        cfg,
+        `/repos/${owner}/${repo}/actions/artifacts/${artifactId}/zip`,
+        { accept: 'application/octet-stream' }
+      );
+      const zip = Buffer.from(await zipResp.arrayBuffer());
+      return await readProofFromArtifactZip(zip, sessionId);
+    }
+
+    if (!matchedPending) {
+      // No matching artifact yet; keep polling for run startup/queue.
+    }
+    await sleep(cfg.githubPollMs);
+  }
+
+  const seconds = Math.max(1, Math.round(timeoutMs / 1000));
+  throw new Error(`GitHub prover timed out after ${seconds}s.${runUrl ? ` ${runUrl}` : ''}`);
+}
+
+async function runProver(session, cfg) {
   const { settle } = session;
   if (!settle.p1.reveal || !settle.p2.reveal) throw new Error('Missing reveals');
   if (!session.transcriptHex) throw new Error('Transcript not ready');
@@ -1196,22 +1449,16 @@ async function runProver(session, proverBin) {
     p2_board_bits_hex: settle.p2.reveal.boardBitsHex,
     transcript_hex: session.transcriptHex,
   };
-
-  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), `zkbs-${session.sessionId}-`));
-  const inputPath = path.join(tmpDir, 'input.json');
-  const outPath = path.join(tmpDir, 'proof.json');
-  await fs.writeFile(inputPath, JSON.stringify(input, null, 2), 'utf8');
-
-  await execFileAsync(proverBin, ['--input', inputPath, '--out', outPath], {
-    maxBuffer: 1024 * 1024 * 20,
-  });
-
-  const raw = await fs.readFile(outPath, 'utf8');
-  const parsed = JSON.parse(raw);
-  const sealHex = cleanHex(parsed?.seal_hex ?? parsed?.sealHex ?? '');
-  const journalHex = cleanHex(parsed?.journal_hex ?? parsed?.journalHex ?? '');
-  if (!sealHex || !journalHex) throw new Error('Prover output missing seal_hex/journal_hex');
-  return { sealHex, journalHex };
+  const useGithub = shouldUseGithubProver(cfg);
+  if (useGithub) {
+    try {
+      return await runGithubProver(input, cfg, session.sessionId);
+    } catch (err) {
+      if (cfg.proverBackend === 'github') throw err;
+      // In auto mode, fallback to local prover if GitHub dispatcher is unavailable.
+    }
+  }
+  return runLocalProver(input, cfg.proverBin, session.sessionId);
 }
 
 async function submitEndGame(sessionId, sealHex, journalHex, cfg) {
@@ -1366,7 +1613,7 @@ async function maybeStartSettlement(io, session) {
     if (!proof?.sealHex || !proof?.journalHex) {
       settle.phase = 'proving';
       broadcastSettleStatus(io, session);
-      proof = await runProver(session, cfg.proverBin);
+      proof = await runProver(session, cfg);
       settle.proof = proof;
     }
 

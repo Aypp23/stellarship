@@ -1,0 +1,122 @@
+name: zkbs-prover
+run-name: "zkbs-prover:${{ inputs.request_id || 'manual' }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      request_id:
+        description: "Unique relay request id"
+        required: true
+        type: string
+      artifact_name:
+        description: "Artifact name to upload"
+        required: true
+        type: string
+      session_id:
+        description: "Session id (u32)"
+        required: true
+        type: string
+      mode_id:
+        description: "Mode id (0 classic, 1 salvo)"
+        required: true
+        type: string
+      p1_salt_hex:
+        required: true
+        type: string
+      p1_board_bits_hex:
+        required: true
+        type: string
+      p2_salt_hex:
+        required: true
+        type: string
+      p2_board_bits_hex:
+        required: true
+        type: string
+      transcript_hex:
+        required: true
+        type: string
+      groth16_selector_hex:
+        description: "Optional 4-byte selector override"
+        required: false
+        default: "73c457ba"
+        type: string
+
+jobs:
+  prove:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            proofs/zk-battleship-risc0 -> target
+
+      - name: Check Docker daemon
+        run: docker version
+
+      - name: Build prover input
+        env:
+          SESSION_ID: ${{ inputs.session_id }}
+          MODE_ID: ${{ inputs.mode_id }}
+          P1_SALT_HEX: ${{ inputs.p1_salt_hex }}
+          P1_BOARD_BITS_HEX: ${{ inputs.p1_board_bits_hex }}
+          P2_SALT_HEX: ${{ inputs.p2_salt_hex }}
+          P2_BOARD_BITS_HEX: ${{ inputs.p2_board_bits_hex }}
+          TRANSCRIPT_HEX: ${{ inputs.transcript_hex }}
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const input = {
+            session_id: Number(process.env.SESSION_ID),
+            mode_id: Number(process.env.MODE_ID),
+            p1_salt_hex: String(process.env.P1_SALT_HEX || '').trim(),
+            p1_board_bits_hex: String(process.env.P1_BOARD_BITS_HEX || '').trim(),
+            p2_salt_hex: String(process.env.P2_SALT_HEX || '').trim(),
+            p2_board_bits_hex: String(process.env.P2_BOARD_BITS_HEX || '').trim(),
+            transcript_hex: String(process.env.TRANSCRIPT_HEX || '').trim(),
+          };
+          if (!Number.isFinite(input.session_id) || input.session_id < 0) {
+            throw new Error('session_id must be a non-negative number');
+          }
+          if (input.mode_id !== 0 && input.mode_id !== 1) {
+            throw new Error('mode_id must be 0 or 1');
+          }
+          fs.writeFileSync('input.json', JSON.stringify(input, null, 2));
+          NODE
+
+      - name: Run zkbs-prover
+        env:
+          RISC0_PROVER: docker
+          ZKBS_GROTH16_SELECTOR_HEX: ${{ inputs.groth16_selector_hex }}
+        run: |
+          cargo run --release --manifest-path proofs/zk-battleship-risc0/host/Cargo.toml -- \
+            --input input.json \
+            --out proof.json
+
+      - name: Validate proof output
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const proof = JSON.parse(fs.readFileSync('proof.json', 'utf8'));
+          const seal = String(proof.seal_hex || proof.sealHex || '').trim();
+          const journal = String(proof.journal_hex || proof.journalHex || '').trim();
+          if (!seal || !journal) {
+            throw new Error('proof.json missing seal_hex/journal_hex');
+          }
+          NODE
+
+      - name: Upload proof artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: proof.json
+          if-no-files-found: error
+          retention-days: 2
