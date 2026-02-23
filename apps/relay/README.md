@@ -5,7 +5,7 @@ This `socket.io` relay does two jobs:
 1. Realtime move forwarding (`move:send` / `move:result`)
 2. Post-game settlement automation:
    - builds the canonical transcript
-   - runs the local RISC0 prover (`zkbs-prover`) or dispatches GitHub Actions prover
+   - runs the local RISC0 prover (`zkbs-prover`)
    - submits `end_game()` on-chain as a relayer account
 3. Optional "vs computer" mode:
    - starts `start_game()` as bot Player 2 from Player 1's signed auth entry
@@ -23,8 +23,7 @@ Copy `apps/relay/.env.example` and fill in:
 - `RELAYER_SECRET_KEY`
 - `BOT_SECRET_KEY` (optional, defaults to `RELAYER_SECRET_KEY` if omitted)
 - (optional) `ZKBS_GROTH16_SELECTOR_HEX` if your deployed verifier selector is not the default.
-- (optional) `ZKBS_PROVER_BACKEND` (`local`, `github`, `auto`)
-- (optional, GitHub prover) `GITHUB_REPO`, `GITHUB_TOKEN`, `GITHUB_WORKFLOW`, `GITHUB_WORKFLOW_REF`
+- (optional) `ZKBS_PROVER_BACKEND` (set `local`; default template is local)
 
 The relayer account must be funded on the target network (Testnet recommended).
 `npm --workspace apps/relay run dev` now loads `apps/relay/.env` automatically.
@@ -51,21 +50,6 @@ Build the prover:
 cd /Users/aomine/Desktop/stellar
 cargo build --release --manifest-path proofs/zk-battleship-risc0/host/Cargo.toml
 ```
-
-## GitHub Actions Prover (Automatic)
-
-To run proving automatically on GitHub-hosted runners instead of your local machine:
-
-1. Keep `.github/workflows/zkbs-prover.yml` in your repo (added in this project).
-2. Set relay env:
-   - `ZKBS_PROVER_BACKEND=github` (or `auto`)
-   - `GITHUB_REPO=Aypp23/stellarship`
-   - `GITHUB_TOKEN=<PAT with repo + workflow scope>`
-   - `GITHUB_WORKFLOW=zkbs-prover.yml`
-   - `GITHUB_WORKFLOW_REF=main`
-3. Start relay normally.
-
-After this, finalize flow triggers proving automatically with no manual GitHub button clicks.
 
 ## One-Time Verifier Wiring (Testnet)
 
