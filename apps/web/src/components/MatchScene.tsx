@@ -1585,10 +1585,18 @@ export default function MatchScene() {
         const myDigest = myRole === 'p1' ? p1DigestHex : p2DigestHex;
         if (myDigest !== expectedDigest) return;
 
-        await relay.markTranscriptCommitted({
+        const markRes = await relay.markTranscriptCommitted({
           role: myRole,
           transcriptDigestHex: expectedDigest,
         });
+        if (!markRes.ok) {
+          const msg = String(markRes.error ?? '');
+          if (/digest mismatch|does not match relayer transcript digest/i.test(msg)) {
+            setSettleMessage(
+              'Transcript digest mismatch detected for this rematch. Start a new rematch and finalize after both sides are fully synced.'
+            );
+          }
+        }
       } catch (err) {
         console.warn('Finalize auto-sync failed:', err);
       } finally {
@@ -1618,6 +1626,7 @@ export default function MatchScene() {
     service,
     sessionId,
     relay,
+    setSettleMessage,
   ]);
 
   const settleSealBytesLen = useMemo(() => {

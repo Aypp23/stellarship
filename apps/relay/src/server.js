@@ -1089,15 +1089,34 @@ async function commitTranscriptAsBot(session, cfg) {
 
 async function reconcileTranscriptCommitsFromChain(session, cfg) {
   const settle = session?.settle;
-  if (!settle) return;
+  if (!settle) {
+    return {
+      currentDigest: '',
+      p1OnChain: '',
+      p2OnChain: '',
+      fetchFailed: false,
+    };
+  }
   const currentDigest = cleanHex(session?.transcriptDigestHex ?? '');
-  if (currentDigest.length !== 64) return;
+  if (currentDigest.length !== 64) {
+    return {
+      currentDigest,
+      p1OnChain: '',
+      p2OnChain: '',
+      fetchFailed: false,
+    };
+  }
 
   let onChain;
   try {
     onChain = await fetchOnChainTranscriptDigests(cfg, session.sessionId);
   } catch {
-    return;
+    return {
+      currentDigest,
+      p1OnChain: '',
+      p2OnChain: '',
+      fetchFailed: true,
+    };
   }
 
   const p1OnChain = cleanHex(onChain?.p1 ?? '');
@@ -1120,6 +1139,13 @@ async function reconcileTranscriptCommitsFromChain(session, cfg) {
       session.bot.transcriptCommittedOnChain = true;
     }
   }
+
+  return {
+    currentDigest,
+    p1OnChain,
+    p2OnChain,
+    fetchFailed: false,
+  };
 }
 
 function scheduleBotTranscriptRetry(io, session, delayMs = 2500) {
@@ -1584,10 +1610,25 @@ async function maybeStartSettlement(io, session) {
   }
 
   // Reconcile commit flags with on-chain truth to recover from transient socket/client state loss.
-  await reconcileTranscriptCommitsFromChain(session, cfg);
+  const chainSnapshot = await reconcileTranscriptCommitsFromChain(session, cfg);
 
   // Safety net: if committed digests diverge (or drift from current transcript), never proceed.
   const currentDigest = cleanHex(session.transcriptDigestHex);
+  let p1OnChain = cleanHex(chainSnapshot?.p1OnChain ?? '');
+  let p2OnChain = cleanHex(chainSnapshot?.p2OnChain ?? '');
+  const onChainDigestMismatchRoles = [];
+  if (currentDigest.length === 64) {
+    if (p1OnChain && p1OnChain !== currentDigest) onChainDigestMismatchRoles.push('P1');
+    if (p2OnChain && p2OnChain !== currentDigest) onChainDigestMismatchRoles.push('P2');
+  }
+  if (onChainDigestMismatchRoles.length > 0) {
+    settle.phase = 'error';
+    settle.error =
+      `On-chain transcript digest mismatch for ${onChainDigestMismatchRoles.join(' / ')}. ` +
+      'Start a new rematch and finalize only after the match fully settles.';
+    broadcastSettleStatus(io, session);
+    return;
+  }
   const p1Digest = cleanHex(settle.p1?.digestHex ?? '');
   const p2Digest = cleanHex(settle.p2?.digestHex ?? '');
   if (settle.p1.commitDone && settle.p2.commitDone) {
@@ -1605,9 +1646,11 @@ async function maybeStartSettlement(io, session) {
   // and bouncing between waiting/submitting under RPC finality lag.
   if (settle.p1.commitDone && settle.p2.commitDone && currentDigest) {
     try {
-      const onChain = await fetchOnChainTranscriptDigests(cfg, session.sessionId);
-      const p1OnChain = cleanHex(onChain?.p1 ?? '');
-      const p2OnChain = cleanHex(onChain?.p2 ?? '');
+      if (!p1OnChain || !p2OnChain) {
+        const onChain = await fetchOnChainTranscriptDigests(cfg, session.sessionId);
+        p1OnChain = cleanHex(onChain?.p1 ?? '');
+        p2OnChain = cleanHex(onChain?.p2 ?? '');
+      }
       const bothVisible = p1OnChain === currentDigest && p2OnChain === currentDigest;
       if (!bothVisible) {
         settle.phase = 'waiting_for_commits';
@@ -2134,8 +2177,17 @@ io.on('connection', (socket) => {
           const cfg = getRelayConfig();
           const onChain = await fetchOnChainTranscriptDigests(cfg, session.sessionId);
           const onChainDigest = role === 'p1' ? cleanHex(onChain?.p1 ?? '') : cleanHex(onChain?.p2 ?? '');
+          if (onChainDigest && onChainDigest !== expectedDigest) {
+            throw new Error(
+              `On-chain digest for ${role.toUpperCase()} does not match relayer transcript digest. Start a new rematch.`
+            );
+          }
           commitVisibleOnChain = onChainDigest === expectedDigest;
-        } catch {
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (msg.includes('does not match relayer transcript digest')) {
+            throw err;
+          }
           // Keep waiting_for_commits; settlement loop will reconcile and retry.
         }
       }
