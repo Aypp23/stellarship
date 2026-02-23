@@ -114,7 +114,7 @@ export class ZkBattleshipService {
       },
       DEFAULT_METHOD_OPTIONS
     );
-    return await simulateAndSignAndSend(tx);
+    return await simulateAndSignAndSend(tx, 'commit_board');
   }
 
   async commitTranscript(
@@ -135,7 +135,7 @@ export class ZkBattleshipService {
       },
       DEFAULT_METHOD_OPTIONS
     );
-    return await simulateAndSignAndSend(tx);
+    return await simulateAndSignAndSend(tx, 'commit_transcript');
   }
 
   async endGame(
@@ -154,7 +154,7 @@ export class ZkBattleshipService {
       },
       DEFAULT_METHOD_OPTIONS
     );
-    return await simulateAndSignAndSend(tx);
+    return await simulateAndSignAndSend(tx, 'end_game');
   }
 
   /**
@@ -315,6 +315,6 @@ export class ZkBattleshipService {
 
     // Must simulate again after auth entries are injected/signed (simulateAndSignAndSend does this).
     void authTtlMinutes; // Reserved for future "validUntilLedgerSeq" plumbing.
-    return await simulateAndSignAndSend(tx);
+    return await simulateAndSignAndSend(tx, 'start_game');
   }
 }
