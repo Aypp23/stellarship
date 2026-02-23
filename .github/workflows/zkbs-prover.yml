@@ -45,6 +45,11 @@ jobs:
   prove:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+      GH_TOKEN: ${{ github.token }}
 
     steps:
       - name: Checkout
@@ -64,6 +69,10 @@ jobs:
 
       - name: Install RISC0 toolchain
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
+          RZUP_GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           if [ ! -x "$HOME/.risc0/bin/rzup" ]; then
@@ -71,7 +80,16 @@ jobs:
           fi
           echo "$HOME/.risc0/bin" >> "$GITHUB_PATH"
           export PATH="$HOME/.risc0/bin:$PATH"
-          rzup install rust
+          for attempt in 1 2 3; do
+            if rzup install rust; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "rzup install rust failed after 3 attempts" >&2
+              exit 1
+            fi
+            sleep 8
+          done
           rzup --version
 
       - name: Cache Cargo
