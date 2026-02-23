@@ -289,6 +289,8 @@ export default function MatchScene() {
   const [showBoardCommittedModal, setShowBoardCommittedModal] = useState(false);
   const [finalizing, setFinalizing] = useState(false);
   const [finalizeSubmitted, setFinalizeSubmitted] = useState(false);
+  const [finalizeSubmittedAt, setFinalizeSubmittedAt] = useState<number | null>(null);
+  const [allowFinalizeRetry, setAllowFinalizeRetry] = useState(false);
   const [finalizeDigestHex, setFinalizeDigestHex] = useState('');
   const [showAdvanced] = useState(false);
   const [settleStatus, setSettleStatus] = useState<SettleStatusPayload | null>(null);
@@ -849,6 +851,8 @@ export default function MatchScene() {
         ? 'RELAYER SUBMITTING...'
         : finalizing
           ? 'FINALIZING...'
+          : allowFinalizeRetry
+            ? 'RETRY FINALIZE'
           : finalizeSubmitted || myFinalizeLockedByRelay
             ? 'FINALIZE SUBMITTED'
             : 'FINALIZE ON-CHAIN';
@@ -886,6 +890,8 @@ export default function MatchScene() {
     setShowOutcomeModal(false);
     setResolvedOutcome(null);
     setFinalizeSubmitted(false);
+    setFinalizeSubmittedAt(null);
+    setAllowFinalizeRetry(false);
     setFinalizeDigestHex('');
     setSettleMessage('');
     setH2hStats(null);
@@ -962,7 +968,11 @@ export default function MatchScene() {
   }, [activeMatch, address, h2hMode, h2hOpponentId, outcome]);
 
   useEffect(() => {
-    if (myFinalizeLockedByRelay) setFinalizeSubmitted(true);
+    if (myFinalizeLockedByRelay) {
+      setFinalizeSubmitted(true);
+      setFinalizeSubmittedAt((prev) => prev ?? Date.now());
+      setAllowFinalizeRetry(false);
+    }
   }, [myFinalizeLockedByRelay]);
 
   useEffect(() => {
@@ -1000,7 +1010,9 @@ export default function MatchScene() {
       setSettleMessage(
         pendingCommitRoles.length > 0
           ? myRoleLabel && pendingCommitRoles.includes(myRoleLabel)
-            ? 'Your transcript commit is still propagating on-chain. No action needed; the relayer will continue automatically.'
+            ? allowFinalizeRetry
+              ? 'Your transcript commit is still not visible on-chain. Click Retry Finalize once.'
+              : 'Your transcript commit is still propagating on-chain. The relayer is retrying automatically.'
             : `Waiting for transcript commits: ${pendingCommitRoles.join(' / ')}.`
           : finalizeSubmitted || myFinalizeLockedByRelay
             ? 'Finalize submitted. Waiting for opponent...'
@@ -1032,7 +1044,47 @@ export default function MatchScene() {
     pendingCommitRoles,
     pendingRevealRoles,
     myRole,
+    allowFinalizeRetry,
     showOutcomeModal,
+  ]);
+
+  useEffect(() => {
+    if (!gameFinishedLocal || !finalizeSubmitted || myFinalizeLockedByRelay) {
+      setAllowFinalizeRetry(false);
+      return;
+    }
+    if (relayerPhase !== 'waiting_for_commits') {
+      setAllowFinalizeRetry(false);
+      return;
+    }
+
+    const myRoleLabel = myRole === 'p1' ? 'P1' : myRole === 'p2' ? 'P2' : '';
+    if (!myRoleLabel || !pendingCommitRoles.includes(myRoleLabel)) {
+      setAllowFinalizeRetry(false);
+      return;
+    }
+
+    const submittedAt = finalizeSubmittedAt ?? Date.now();
+    const elapsedMs = Date.now() - submittedAt;
+    if (elapsedMs >= 45_000) {
+      setAllowFinalizeRetry(true);
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setAllowFinalizeRetry(true);
+    }, 45_000 - elapsedMs);
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [
+    gameFinishedLocal,
+    finalizeSubmitted,
+    myFinalizeLockedByRelay,
+    relayerPhase,
+    myRole,
+    pendingCommitRoles,
+    finalizeSubmittedAt,
   ]);
 
   useEffect(() => {
@@ -1424,7 +1476,7 @@ export default function MatchScene() {
     relay.connected &&
     !!myRole &&
     !finalizing &&
-    !finalizeSubmitted &&
+    (!finalizeSubmitted || allowFinalizeRetry) &&
     !myFinalizeLockedByRelay &&
     !relayerIsBusy &&
     !relayerIsDone;
@@ -1441,6 +1493,7 @@ export default function MatchScene() {
     }
 
     setSettleMessage('');
+    setAllowFinalizeRetry(false);
     setFinalizing(true);
     try {
       const info = await relay.getSettleInfo();
@@ -1550,6 +1603,7 @@ export default function MatchScene() {
       }
 
       setFinalizeSubmitted(true);
+      setFinalizeSubmittedAt(Date.now());
       setSettleMessage('Finalize submitted. Waiting for relayer status...');
     } catch (err: any) {
       console.error(err);
