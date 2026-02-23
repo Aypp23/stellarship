@@ -289,6 +289,7 @@ export default function MatchScene() {
   const [showBoardCommittedModal, setShowBoardCommittedModal] = useState(false);
   const [finalizing, setFinalizing] = useState(false);
   const [finalizeSubmitted, setFinalizeSubmitted] = useState(false);
+  const [finalizeDigestHex, setFinalizeDigestHex] = useState('');
   const [showAdvanced] = useState(false);
   const [settleStatus, setSettleStatus] = useState<SettleStatusPayload | null>(null);
   const [fireFeedbackState, setFireFeedbackState] = useState<'idle' | 'launching' | 'awaiting' | 'resolved'>('idle');
@@ -840,10 +841,6 @@ export default function MatchScene() {
   const relayerIsDone = relayerPhase === 'done';
   const relayerIsBusy = relayerPhase === 'proving' || relayerPhase === 'submitting';
   const relayerIsError = relayerPhase === 'error';
-  const needsFinalizeRetry =
-    finalizeSubmitted &&
-    !myFinalizeLockedByRelay &&
-    (relayerPhase === 'waiting_for_commits' || relayerPhase === 'waiting_for_reveals');
   const finalizeCtaLabel = relayerIsDone
     ? 'FINALIZED'
     : relayerPhase === 'proving'
@@ -852,8 +849,6 @@ export default function MatchScene() {
         ? 'RELAYER SUBMITTING...'
         : finalizing
           ? 'FINALIZING...'
-          : needsFinalizeRetry
-            ? 'RETRY FINALIZE'
           : finalizeSubmitted || myFinalizeLockedByRelay
             ? 'FINALIZE SUBMITTED'
             : 'FINALIZE ON-CHAIN';
@@ -891,6 +886,7 @@ export default function MatchScene() {
     setShowOutcomeModal(false);
     setResolvedOutcome(null);
     setFinalizeSubmitted(false);
+    setFinalizeDigestHex('');
     setSettleMessage('');
     setH2hStats(null);
     setFireFeedbackState('idle');
@@ -1004,7 +1000,7 @@ export default function MatchScene() {
       setSettleMessage(
         pendingCommitRoles.length > 0
           ? myRoleLabel && pendingCommitRoles.includes(myRoleLabel)
-            ? 'Your transcript commit is not confirmed on-chain yet. Click Finalize on-chain again.'
+            ? 'Your transcript commit is still propagating on-chain. No action needed; the relayer will continue automatically.'
             : `Waiting for transcript commits: ${pendingCommitRoles.join(' / ')}.`
           : finalizeSubmitted || myFinalizeLockedByRelay
             ? 'Finalize submitted. Waiting for opponent...'
@@ -1428,6 +1424,7 @@ export default function MatchScene() {
     relay.connected &&
     !!myRole &&
     !finalizing &&
+    !finalizeSubmitted &&
     !myFinalizeLockedByRelay &&
     !relayerIsBusy &&
     !relayerIsDone;
@@ -1461,6 +1458,7 @@ export default function MatchScene() {
         throw new Error('Relayer transcript digest is invalid (expected 32 bytes).');
       }
       const digestHexNormalized = bytesToHex(digestBytes);
+      setFinalizeDigestHex(digestHexNormalized);
 
       const myOnChainDigest = myRole === 'p1' ? onChainTranscriptHex.p1 : onChainTranscriptHex.p2;
       if (myTranscriptCommitted) {
@@ -1560,6 +1558,67 @@ export default function MatchScene() {
       setFinalizing(false);
     }
   };
+
+  useEffect(() => {
+    if (!gameFinishedLocal || !activeSessionId || !address || !myRole) return;
+    if (!finalizeSubmitted || myFinalizeLockedByRelay) return;
+    if (relayerPhase !== 'waiting_for_commits') return;
+
+    const expectedDigest = normalizeHex(finalizeDigestHex || relayerTranscriptDigestHex);
+    if (expectedDigest.length !== 64) return;
+
+    let cancelled = false;
+    let inFlight = false;
+
+    const syncCommitToRelay = async () => {
+      if (cancelled || inFlight) return;
+      inFlight = true;
+      try {
+        const latest = await service.getSession(sessionId, address);
+        if (!latest) return;
+
+        const p1DigestHex = digestHexFromValue((latest as any).player1_transcript_digest);
+        const p2DigestHex = digestHexFromValue((latest as any).player2_transcript_digest);
+        setTranscriptCommits({ p1: !!p1DigestHex, p2: !!p2DigestHex });
+        setOnChainTranscriptHex({ p1: p1DigestHex, p2: p2DigestHex });
+
+        const myDigest = myRole === 'p1' ? p1DigestHex : p2DigestHex;
+        if (myDigest !== expectedDigest) return;
+
+        await relay.markTranscriptCommitted({
+          role: myRole,
+          transcriptDigestHex: expectedDigest,
+        });
+      } catch (err) {
+        console.warn('Finalize auto-sync failed:', err);
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    void syncCommitToRelay();
+    const timer = setInterval(() => {
+      void syncCommitToRelay();
+    }, 2500);
+
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [
+    gameFinishedLocal,
+    activeSessionId,
+    address,
+    myRole,
+    finalizeSubmitted,
+    myFinalizeLockedByRelay,
+    relayerPhase,
+    finalizeDigestHex,
+    relayerTranscriptDigestHex,
+    service,
+    sessionId,
+    relay,
+  ]);
 
   const settleSealBytesLen = useMemo(() => {
     try {
